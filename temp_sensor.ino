@@ -45,11 +45,11 @@ struct data_frame {
 
 #ifdef AHTx_enable
   #include <Adafruit_AHTX0.h>
+  //https://github.com/adafruit/Adafruit_AHTX0
+  // V 2.0.1
   Adafruit_AHTX0 aht;
   bool aht_found;
   bool aht_started;
-  float temp_storage = 0;
-  float pressure_storage = 0;
 
   int start_aht(){
     aht_found = aht.begin();
@@ -117,7 +117,7 @@ struct data_frame {
 
   void read_BMP(struct data_frame &data_frame){
     data_frame.bmp_temp = bmp.readTemperature();
-    data_frame.bmp_humd = bmp.readPressure();
+    data_frame.bmp_pres = bmp.readPressure();
    }
 
   int start_bmp(){
@@ -196,7 +196,7 @@ void send_data(struct data_frame d_frame){
 
   char buffer[1024];
   size_t n = serializeJson(doc, buffer);
-  mqtt_client.publish(mqtt_json_data_topic, buffer, n);
+  mqtt_client.publish(json_data_topic, buffer, n);
   mqtt_client.loop();
 }
 
@@ -242,11 +242,7 @@ void setup() {
   mqtt_client.setCallback(callback);
  	delay(500);
 
-  esp_sleep_wakeup_cause_t wakeup_reason;
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER){
-    woke_from_sleep = 1;
-  }
+
 
 
 }
@@ -301,7 +297,7 @@ void mqttConnect() {
       mqtt_client.publish(willTopic, "online", true);
       // ...
       // Subcribe here.
-      mqtt_client.subscribe(mqtt_command_topic);
+      mqtt_client.subscribe(json_command_topic);
       } else {
       Serial.print("failed, rc = ");
       Serial.print(mqtt_client.state());
@@ -339,8 +335,8 @@ void loop() {
   mqtt_client.loop();
   currentMillis = millis();
 
-  if (currentMillis - last_info_Millis >= polling_rate ) {
-    last_info_Millis = currentMillis;
+  if (currentMillis - last_poll_Millis >= polling_rate ) {
+    last_poll_Millis = currentMillis;
     struct data_frame dframe;
 
     #ifdef DS18_enable
@@ -372,8 +368,8 @@ void loop() {
 
   }
 
-  if (currentMillis - last_poll_Millis >= send_info_rate){
-    last_poll_Millis = currentMillis;
+  if (currentMillis - last_info_Millis >= send_info_rate){
+    last_info_Millis = currentMillis;
     send_info();
   }
 
