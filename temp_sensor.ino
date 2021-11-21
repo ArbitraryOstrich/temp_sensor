@@ -377,15 +377,4 @@ void loop() {
     send_info();
   }
 
-  if (woke_from_sleep == 1){
-      woke_from_sleep = 0;
-      timeClient.update();
-      DynamicJsonDocument doc(64);
-      doc["tx_time"] = timeClient.getEpochTime();
-      doc["msg"] = "Woke up from sleep";
-      char buffer[64];
-      size_t n = serializeJson(doc, buffer);
-      mqtt_client.publish(mqtt_log_topic, buffer, n);
-      mqtt_client.loop();
-  }
 }
