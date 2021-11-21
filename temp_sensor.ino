@@ -110,6 +110,8 @@ struct data_frame {
 
 #ifdef BMP_enable
   #include <Adafruit_BMP280.h>
+  // https://github.com/adafruit/Adafruit_BMP280_Library
+  // V 2.4.2
   #define SEALEVELPRESSURE_HPA (1013.25)
   Adafruit_BMP280 bmp;
   bool bmp_found;
@@ -143,7 +145,9 @@ struct data_frame {
   // https://github.com/cpetrich/counterfeit_DS18B20
   #include <Wire.h>
   #include <OneWire.h>
+  //https://www.pjrc.com/teensy/td_libs_OneWire.html
   #include <DallasTemperature.h>
+  //https://github.com/milesburton/Arduino-Temperature-Control-Library
   OneWire oneWire(23);
   DallasTemperature ds18b20(&oneWire);
   float read_DS18(){
