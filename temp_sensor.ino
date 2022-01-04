@@ -214,6 +214,8 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
+  WiFi.setHostname(wifiHostname); //define hostname
+
   Serial.println("Connected!");
   timeClient.begin();
   Serial.println("Time Client Started");
@@ -316,6 +318,7 @@ void send_info(){
   DynamicJsonDocument doc(512);
   doc["t"] = epochDate; //1+10
   doc["Wifi IP"] = ip_char; //7+16
+  doc["Hostname"] = wifiHostname;
   doc["Code Version"] = _VERSION; //12+21
   doc["polling_rate"] = polling_rate/1000; //12+8 1000 days is 8 digits in seconds
   doc["info_rate"] = send_info_rate/1000; //9+8
