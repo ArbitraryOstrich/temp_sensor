@@ -1,6 +1,4 @@
-#include <WiFiClient.h>
-#include <WiFi.h>
-
+#include <WiFiUdp.h>
 #include <ArduinoJson.h>
 //https://arduinojson.org/
 //6.18.4
@@ -14,16 +12,35 @@
 //https://github.com/YiannisBourkelis/Uptime-Library
 // V 1.0.0
 
+#include <WiFiClient.h>
+
 #include "version.h"
 #include "config.h"
+
+
+//Remember these are in config.h so they must be below.
+#ifdef disable_brownouts
+  #include "soc/soc.h"
+  #include "soc/rtc_cntl_reg.h"
+#endif
+
+
+
+#ifdef esp8266_enable
+  #include <ESP8266WiFi.h>
+#endif
+#ifdef esp32_enable
+  #include <WiFi.h> 
+  #include <Arduino.h>
+#endif
 
 
 //Stuff TODO:
 //TODO: Add checking to each sensor_start function that reports a failed sensor start.
 //TODO: In the case of a failed sensor, their should be a report channel in mqtt.
 //TODO: Ideally also a way to remotely stop and restart the sensor to try again.
-
-
+//TODO: Polling rate limits based on sensor
+//TODO: Fix polling rate thing for multiple sensors?
 struct data_frame {
   #ifdef BME_enable
     float bme_temp;
@@ -41,7 +58,55 @@ struct data_frame {
   #ifdef DS18_enable
     float DS18_temp;
   #endif
+  #ifdef sgp40_enable
+    float SGP40_voc;
+  #endif
 };
+
+
+#ifdef sgp40_enable
+  #include <sensirion_arch_config.h>
+  #include <DFRobot_SGP40.h>
+  #include <sensirion_voc_algorithm.h>
+  //https://github.com/DFRobot/DFRobot_SGP40
+  //V1.0.2
+  bool SGP40_found; 
+  bool SGP40_started;
+
+  DFRobot_SGP40    mySgp40;
+  bool start_sgp40(){
+    DBUG.println("Starting SGP40:");
+    DBUG.println("- init time takes 10 seconds");
+    DBUG.println("- quickest reading is 1 second");
+    DBUG.println("- reading is 24 hour relative");
+    // DBUG.println("- loops init if fail");
+    /* 
+     * VOC index can directly indicate the condition of air quality. The larger the value, the worse the air quality
+     *    0-100，no need to ventilate,purify
+     *    100-200，no need to ventilate,purify
+     *    200-400，ventilate,purify
+     *    400-500，ventilate,purify intensely
+     * Return VOC index, range: 0-500
+     */
+    // while(mySgp40.begin(/*duration = */10000) !=true){
+    //   DBUG.println("failed to init chip, please check if the chip connection is fine");
+    //   delay(1000);
+    // }
+    if(mySgp40.begin(/*duration = */10000) !=true){
+      mqttLog("Failed to init SGP40");
+      return 0;
+    }else{
+      mqttLog("SGP40 started");
+      return 1;
+    }
+  }
+
+  void read_sgp40(struct data_frame &dataframe){
+      dataframe.SGP40_voc = mySgp40.getVoclndex();
+      DBUG.print("vocIndex = ");
+      DBUG.println(dataframe.SGP40_voc);
+  }
+#endif
 
 #ifdef AHTx_enable
   #include <Adafruit_AHTX0.h>
@@ -51,13 +116,13 @@ struct data_frame {
   bool aht_found;
   bool aht_started;
 
-  int start_aht(){
+  bool start_aht(){
     aht_found = aht.begin();
     if (!aht_found) {
-      Serial.println("Could not find a valid AHTX0 sensor, check wiring!");
+      mqttLog("Could not find a valid AHTX0 sensor, check wiring!");
       return 0;
     }else{
-      Serial.println("AHTX0 started.");
+      mqttLog("AHTX0 started.");
       return 1;
     }
   }
@@ -68,8 +133,6 @@ struct data_frame {
     dataframe.AHTt = temp.temperature;
     dataframe.AHTh = humidity.relative_humidity;
   }
-
-
 #endif
 
 #ifdef BME_enable
@@ -88,24 +151,23 @@ struct data_frame {
   }
 
   int start_bme(){
-    Serial.println("Attempting to start BME");
+    DBUG.println("Attempting to start BME");
     bme_found = bme.begin(0x77);
     if (bme_found == 1) {
-        Serial.println("I2C BME Started on address 0x77");
+        DBUG.println("I2C BME Started on address 0x77");
         return 1;
     }else{
-      Serial.println("Starting BME Failed on 0x77, trying 0x76");
+      DBUG.println("Starting BME Failed on 0x77, trying 0x76");
       bme_found = bme.begin(0x76);
       if (bme_found == 1) {
-        Serial.println("I2C BME Started on address 0x76");
+        DBUG.println("I2C BME Started on address 0x76");
         return 1;
       }else{
-        Serial.println("Failed to find BME at common I2C address");
+        DBUG.println("Failed to find BME at common I2C address");
         return 0;
       }
     }
   }
-
 #endif
 
 #ifdef BMP_enable
@@ -125,14 +187,13 @@ struct data_frame {
   int start_bmp(){
     bmp_found = bmp.begin(0x76,0x58);
     if (!bmp_found) {
-        Serial.println("Could not find a valid BMP280 sensor, check wiring!");
+        DBUG.println("Could not find a valid BMP280 sensor, check wiring!");
         return 0;
       }else{
-        Serial.println("BMP280 started.");
+        DBUG.println("BMP280 started.");
         return 1;
       }
   }
-
 #endif
 
 #ifdef DS18_enable
@@ -148,8 +209,15 @@ struct data_frame {
   //https://www.pjrc.com/teensy/td_libs_OneWire.html
   #include <DallasTemperature.h>
   //https://github.com/milesburton/Arduino-Temperature-Control-Library
-  OneWire oneWire(23);
-  DallasTemperature ds18b20(&oneWire);
+  bool ds18b20_started;
+  int start_DS18(){
+    Wire.begin();
+    ds18b20.begin();
+    OneWire oneWire(23);
+    DallasTemperature ds18b20(&oneWire);
+    return ds18b20,isConnected()
+  }
+
   float read_DS18(){
     ds18b20.requestTemperatures();
     float DS18 = ds18b20.getTempCByIndex(0);
@@ -159,12 +227,47 @@ struct data_frame {
 
 
 
+bool start_sensor(){
+  // Doing it this way means no multiple sensors.
+  // Fix this by using our already made start_x functions.
+  #ifdef sgp40_enable
+    SGP40_started = start_sgp40();
+    // return SGP40_started;
+  #endif
+  #ifdef BME_enable
+    bme_started = start_bme();
+    // return bme_started;
+  #endif
+
+  #ifdef BMP_enable
+    bmp_started = start_bmp();
+    // return bmp_started;
+  #endif
+
+  #ifdef AHTx_enable
+    aht_started = start_aht();
+    // return aht_started;
+  #endif
+
+  #ifdef DS18_enable
+    ds18b20_started = start_DS18()
+    // return ds18b20_started;
+  #endif
+
+}
+
+
+
 void send_data(struct data_frame d_frame){
   timeClient.update();
   int epochDate = timeClient.getEpochTime();
   DynamicJsonDocument doc(1024);
   doc["t"] = epochDate;
-
+  #ifdef sgp40_enable
+    char sgp40VOC[15];
+    sprintf(sgp40VOC, "%.1f", d_frame.SGP40_voc);    
+    doc["SGP40_voc"] = sgp40VOC;
+  #endif
   #ifdef AHTx_enable
     char AHTt[15];
     char AHTh[15];
@@ -197,6 +300,12 @@ void send_data(struct data_frame d_frame){
     sprintf(DS18t, "%.1f", d_frame.DS18_temp);
     doc["DS18_temp"] = DS18t;
   #endif
+  #ifdef DS18_enable
+    char DS18t[15];
+    sprintf(DS18t, "%.1f", d_frame.DS18_temp);
+    doc["DS18_temp"] = DS18t;
+  #endif
+
 
   char buffer[1024];
   size_t n = serializeJson(doc, buffer);
@@ -205,50 +314,35 @@ void send_data(struct data_frame d_frame){
 }
 
 void setup() {
-  Serial.begin(115200);
+  DBUG.begin(115200);
 
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+  #ifdef disable_brownouts
+    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable detector
+  #endif
+
+  DBUG.print("Connecting to ");
+  DBUG.println(ssid);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
+    DBUG.print(".");
   }
   WiFi.setHostname(wifiHostname); //define hostname
 
-  Serial.println("Connected!");
+  DBUG.println("Connected!");
   timeClient.begin();
-  Serial.println("Time Client Started");
-  Serial.println("WiFi connected:");
+  DBUG.println("Time Client Started");
+  DBUG.println("WiFi connected:");
   IPAddress ip = WiFi.localIP();
-  Serial.print(ip);
-  Serial.println("/");
+  DBUG.print(ip);
+  DBUG.println("/");
 
   // Generate some info once for info topic
   sprintf(ip_char, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-
-  #ifdef BME_enable
-    bme_started = start_bme();
-  #endif
-
-  #ifdef BMP_enable
-    bmp_started = start_bmp();
-  #endif
-
-  #ifdef AHTx_enable
-    aht_started = start_aht();
-  #endif
-
-  #ifdef DS18_enable
-    Wire.begin();
-    ds18b20.begin();
-  #endif
-
   mqtt_client.setServer(mqttServerIp, mqttServerPort);
   mqtt_client.setCallback(callback);
+  start_sensor();
  	delay(500);
-
-
 
 
 }
@@ -259,26 +353,61 @@ void callback(char *topic, byte *payload, unsigned int length) {
   deserializeJson(r_doc, payload, length);
   timeClient.update();
   int mqttRxTime = timeClient.getEpochTime();
+
   // start a mqtt message buffer
   char mqtt_log_message[256];
   sprintf(mqtt_log_message, "RX at %d ", mqttRxTime);
+
+
+  DynamicJsonDocument doc(1024);
+  doc["rx_t"] = timeClient.getEpochTime();
+  doc["msg"] = "Received Command but didn't understand";
+
+
   if (r_doc["set_polling"]) {
     if (r_doc["set_polling"].as<int>() != 0){
+        doc.remove("msg");
         polling_rate = r_doc["set_polling"].as<int>()*1000;
-        size_t offset = strlen(mqtt_log_message);
-        sprintf(&(mqtt_log_message[offset]), " Setting the polling rate at %d seconds" , polling_rate/1000); //38+10
+        doc["set_polling"] = polling_rate/1000;
       }
     }
   if (r_doc["set_info"]) {
     if (r_doc["set_info"].as<int>() != 0){
+      doc.remove("msg");
       send_info_rate = r_doc["set_info"].as<int>()*1000;
-      size_t offset = strlen(mqtt_log_message);
-      sprintf(&(mqtt_log_message[offset]), " Setting the info send rate at %d seconds" , send_info_rate/1000);
+      doc["set_info"] = send_info_rate/1000;
     }
   }
-  mqttLog(mqtt_log_message);
+  if (r_doc["start_sensor"]) {
+    if (r_doc["start_sensor"].as<int>() == 1){
+      doc.remove("msg");
+      start_sensor();
+      #ifdef BME_enable
+        doc["BME"] = bme_started;
+      #endif
+
+      #ifdef BMP_enable
+        doc["BMP"] = bmp_started;
+      #endif
+
+      #ifdef AHTx_enable
+        doc["AHT"] =  aht_started;
+      #endif
+
+      #ifdef DS18_enable
+        doc["DS18"] = ds18b20_started;
+      #endif
+    }
+  }
+  // mqttLog(mqtt_log_message);
+  char buffer[1024];
+  size_t n = serializeJson(doc, buffer);
+  mqtt_client.publish(mqtt_log_topic, buffer, n);
+  mqtt_client.loop();
 }
 void mqttLog(const char* str) {
+  // This needs some sort of buffer, would be nice if it built up multi line messages and chuncked the message to the server so that we don't erase our own logs on serv when many things happen at once. 
+  DBUG.println(str);
   if (mqtt_client.connected()){
     DynamicJsonDocument doc(256);
     timeClient.update();
@@ -295,19 +424,19 @@ void mqttLog(const char* str) {
 }
 void mqttConnect() {
   while (!mqtt_client.connected()) {
-    Serial.print("Attempting MQTT connection...");
+    DBUG.print("Attempting MQTT connection...");
     if (mqtt_client.connect(mqttClientName, mqttUsername, mqttPassword, willTopic, willQoS, willRetain, willMessage)) {
-      Serial.println("Connection Complete");
-      Serial.println(willTopic);
+      DBUG.println("Connection Complete");
+      DBUG.println(willTopic);
       delay(1000);
       mqtt_client.publish(willTopic, "online", true);
       // ...
       // Subcribe here.
       mqtt_client.subscribe(json_command_topic);
       } else {
-      Serial.print("failed, rc = ");
-      Serial.print(mqtt_client.state());
-      Serial.println(" Trying again in 5 seconds");
+      DBUG.print("failed, rc = ");
+      DBUG.print(mqtt_client.state());
+      DBUG.println(" Trying again in 5 seconds");
       delay(5000);
     }
   }
@@ -346,6 +475,12 @@ void loop() {
     last_poll_Millis = currentMillis;
     struct data_frame dframe;
 
+    #ifdef sgp40_enable
+      if (SGP40_started){
+        read_sgp40(dframe);
+      }
+    #endif
+
     #ifdef DS18_enable
       dframe.DS18_temp = read_DS18();
     #endif
@@ -354,6 +489,7 @@ void loop() {
       if (aht_started){
         read_AHT(dframe);
       }else{
+
       }
     #endif
 
